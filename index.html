@@ -125,6 +125,11 @@ footer{text-align:center;font-size:11px;color:var(--text3);font-family:'JetBrain
 .sd-opt{padding:7px 12px;font-size:12px;color:var(--text2);cursor:pointer;transition:background .1s;white-space:nowrap;}
 .sd-opt:hover{background:rgba(102,126,234,0.12);color:var(--text);}
 .sd-opt.selected{background:rgba(102,126,234,0.18);color:#667eea;font-weight:600;}
+.sd-opt.multi{display:flex;align-items:center;gap:8px;}
+.sd-opt.multi::before{content:'';width:14px;height:14px;border:1.5px solid var(--border2);border-radius:3px;flex-shrink:0;background:var(--card);transition:all .1s;}
+.sd-opt.multi.checked::before{background:#667eea;border-color:#667eea;box-shadow:inset 0 0 0 2px var(--card);}
+.sd-opt.multi.checked{background:rgba(102,126,234,0.10);color:var(--text);font-weight:500;}
+.sd-multi-all{border-bottom:1px solid var(--border);font-weight:600;}
 .sd-opt.hidden{display:none;}
 .sd-empty{padding:10px 12px;font-size:12px;color:var(--text3);font-style:italic;}
 
@@ -268,6 +273,13 @@ footer{text-align:center;font-size:11px;color:var(--text3);font-family:'JetBrain
     <div class="sd-popup" id="sd-pop-f-name">
       <div class="sd-search"><i class="ti ti-search" style="font-size:12px;color:var(--text3)"></i><input type="text" placeholder="Search..." oninput="sdSearch('f-name',this.value)" id="sd-inp-f-name"></div>
       <div class="sd-list" id="sd-list-f-name"></div>
+    </div>
+  </div></div>
+  <div class="filter-group"><label>Product</label><div class="sd-wrap" id="sd-wrap-f-product">
+    <button class="sd-btn" id="sd-btn-f-product" onclick="sdToggle('f-product',event)"><span id="sd-lbl-f-product">All products</span></button>
+    <div class="sd-popup" id="sd-pop-f-product">
+      <div class="sd-search"><i class="ti ti-search" style="font-size:12px;color:var(--text3)"></i><input type="text" placeholder="Search..." oninput="sdSearch('f-product',this.value)" id="sd-inp-f-product"></div>
+      <div class="sd-list" id="sd-list-f-product"></div>
     </div>
   </div></div>
   <div class="filter-group"><label>OT</label><div class="sd-wrap" id="sd-wrap-f-ot">
@@ -422,6 +434,7 @@ var BASE='https://docs.google.com/spreadsheets/d/'+SHEET_ID;
 var JSON_URL=BASE+'/gviz/tq?tqx=out:json&gid='+GID;
 var DOJ_URL=BASE+'/gviz/tq?tqx=out:json&sheet=EMP%20IDS%20as%20per%20IT%20sheet';
 var dojMap={};
+var productMap={};
 
 // ── STATE ──────────────────────────────────────────────────────────────────
 var raw=[],filtered=[],charts={},trendM='work',empM='work';
@@ -544,12 +557,20 @@ function fetchDOJ(){
       var cols=resp.table.cols.map(function(c){return (c.label||'').trim();});
       var idCol=cols.indexOf('EMP_ID');
       var dojCol=cols.indexOf('DOJ');
+      var prodCol=cols.indexOf('Product');
       if(idCol<0||dojCol<0){console.warn('DOJ sheet cols not found',cols);return;}
       resp.table.rows.forEach(function(row){
         var idCell=row.c[idCol];
         var dojCell=row.c[dojCol];
-        if(!idCell||!idCell.v||!dojCell||!dojCell.v)return;
+        if(!idCell||!idCell.v)return;
         var empId=String(idCell.v).trim();
+        // Product mapping (1:1)
+        if(prodCol>=0){
+          var pCell=row.c[prodCol];
+          var pv=pCell&&pCell.v?String(pCell.v).trim():'';
+          if(pv&&pv!=='#N/A')productMap[empId]=pv;
+        }
+        if(!dojCell||!dojCell.v)return;
         // gviz returns dates as "Date(YYYY,M,D)" or formatted string
         var doj=dojCell.v;
         var dt=null;
@@ -562,7 +583,8 @@ function fetchDOJ(){
         }
         if(dt&&!isNaN(dt))dojMap[empId]=dt;
       });
-      console.log('DOJ map loaded:',Object.keys(dojMap).length,'entries');
+      console.log('DOJ map loaded:',Object.keys(dojMap).length,'entries | Product map:',Object.keys(productMap).length,'entries');
+      populateProductFilter();
     })
     .catch(function(e){console.warn('DOJ fetch failed:',e);});
 }
@@ -666,43 +688,98 @@ function loadData(){
 }
 
 // ── FILTERS ────────────────────────────────────────────────────────────────
+var MULTI_IDS=['f-shift','f-name','f-product'];
 function populateFilters(){
   function uniq(fn){return[...new Set(raw.map(fn).filter(Boolean))].sort();}
-  // month filter replaced by date range picker
   fillSel('f-tl',uniq(rowTL));
   fillSel('f-shift',uniq(rowShift));
   fillSel('f-name',uniq(rowName));
 }
+function populateProductFilter(){
+  var prods=[...new Set(Object.values(productMap).filter(Boolean))].sort();
+  fillSel('f-product',prods);
+}
 function fillSel(id,opts){
-  var cur=sdVals[id]||'';
   var list=document.getElementById('sd-list-'+id);
   if(!list)return;
-  var placeholders={'f-tl':'All TLs','f-shift':'All shifts','f-name':'All employees'};
+  var placeholders={'f-tl':'All TLs','f-shift':'All shifts','f-name':'All employees','f-product':'All products'};
   var placeholder=placeholders[id]||'All';
-  var html='<div class="sd-opt selected" onclick="sdSelect(\''+id+'\',\'\',\''+placeholder+'\')">'+placeholder+'</div>';
-  opts.forEach(function(o){
-    var sel=o===cur?' selected':'';
-    var escaped=o.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-    html+='<div class="sd-opt'+sel+'" onclick="sdSelect(\''+id+'\',\''+escaped+'\',\''+escaped+'\')">'+o+'</div>';
+  if(MULTI_IDS.indexOf(id)>=0){
+    var selArr=sdMulti[id]||[];
+    var html='<div class="sd-opt sd-multi-all" onclick="sdMultiAll(\''+id+'\')">'+placeholder+'</div>';
+    opts.forEach(function(o){
+      var escaped=o.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      var checked=selArr.indexOf(o)>=0?' checked':'';
+      html+='<div class="sd-opt multi'+checked+'" onclick="sdMultiToggle(\''+id+'\',\''+escaped+'\')">'+o+'</div>';
+    });
+    list.innerHTML=html;
+    updateMultiLabel(id);
+  } else {
+    var cur=sdVals[id]||'';
+    var html2='<div class="sd-opt selected" onclick="sdSelect(\''+id+'\',\'\',\''+placeholder+'\')">'+placeholder+'</div>';
+    opts.forEach(function(o){
+      var sel=o===cur?' selected':'';
+      var escaped=o.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      html2+='<div class="sd-opt'+sel+'" onclick="sdSelect(\''+id+'\',\''+escaped+'\',\''+escaped+'\')">'+o+'</div>';
+    });
+    list.innerHTML=html2;
+    document.getElementById('sd-lbl-'+id).textContent=cur||placeholder;
+    sdVals[id]=cur;
+  }
+}
+function updateMultiLabel(id){
+  var placeholders={'f-shift':'All shifts','f-name':'All employees','f-product':'All products'};
+  var arr=sdMulti[id]||[];
+  var lbl=document.getElementById('sd-lbl-'+id);
+  if(!arr.length){lbl.textContent=placeholders[id];}
+  else if(arr.length===1){lbl.textContent=arr[0];}
+  else{lbl.textContent=arr.length+' selected';}
+}
+function sdMultiToggle(id,val){
+  if(!sdMulti[id])sdMulti[id]=[];
+  var i=sdMulti[id].indexOf(val);
+  if(i>=0)sdMulti[id].splice(i,1);else sdMulti[id].push(val);
+  // update checkbox visual
+  document.querySelectorAll('#sd-list-'+id+' .sd-opt.multi').forEach(function(o){
+    o.classList.toggle('checked',sdMulti[id].indexOf(o.textContent)>=0);
   });
-  list.innerHTML=html;
-  document.getElementById('sd-lbl-'+id).textContent=cur||placeholder;
-  sdVals[id]=cur;
+  updateMultiLabel(id);
+  applyFilters();
+}
+function sdMultiAll(id){
+  sdMulti[id]=[];
+  document.querySelectorAll('#sd-list-'+id+' .sd-opt.multi').forEach(function(o){o.classList.remove('checked');});
+  updateMultiLabel(id);
+  applyFilters();
 }
 function clearFilters(){
-  ['f-tl','f-shift','f-name','f-ot'].forEach(function(id){sdVals[id]='';var placeholder={'f-tl':'All TLs','f-shift':'All shifts','f-name':'All employees','f-ot':'All'}[id];document.getElementById('sd-lbl-'+id).textContent=placeholder;document.querySelectorAll('#sd-list-'+id+' .sd-opt').forEach(function(o){o.classList.toggle('selected',o.textContent===placeholder);});});
+  // Single-select: TL, OT
+  ['f-tl','f-ot'].forEach(function(id){
+    sdVals[id]='';
+    var placeholder={'f-tl':'All TLs','f-ot':'All'}[id];
+    document.getElementById('sd-lbl-'+id).textContent=placeholder;
+    document.querySelectorAll('#sd-list-'+id+' .sd-opt').forEach(function(o){o.classList.toggle('selected',o.textContent===placeholder);});
+  });
+  // Multi-select: Shift, Employee, Product
+  MULTI_IDS.forEach(function(id){
+    sdMulti[id]=[];
+    document.querySelectorAll('#sd-list-'+id+' .sd-opt.multi').forEach(function(o){o.classList.remove('checked');});
+    updateMultiLabel(id);
+  });
   applyFilters();
 }
 function applyFilters(){
   var ftl=(sdVals['f-tl']||'');
-  var fs=(sdVals['f-shift']||'');
-  var fn=(sdVals['f-name']||'');
+  var fshifts=sdMulti['f-shift']||[];
+  var fnames=sdMulti['f-name']||[];
+  var fprods=sdMulti['f-product']||[];
   var fot=(sdVals['f-ot']||'');
   var ds=drpState.start, de=drpState.end;
   filtered=raw.filter(function(r){
     if(ftl&&rowTL(r)!==ftl)return false;
-    if(fs&&rowShift(r)!==fs)return false;
-    if(fn&&rowName(r)!==fn)return false;
+    if(fshifts.length&&fshifts.indexOf(rowShift(r))<0)return false;
+    if(fnames.length&&fnames.indexOf(rowName(r))<0)return false;
+    if(fprods.length){var p=productMap[rowEmpID(r)]||'';if(fprods.indexOf(p)<0)return false;}
     if(fot==='yes'&&!isOT(r))return false;
     if(fot==='no'&&isOT(r))return false;
     if(ds||de){var rd=drpFromStr(rowDate(r));if(!rd)return false;if(ds&&rd<ds)return false;if(de&&rd>de)return false;}
@@ -1090,12 +1167,14 @@ function openPanel(el){
   if(!m)return;
   document.getElementById('panel-title').textContent=m.label;
   var _ftl=(sdVals['f-tl']||'');
-  var _fs=(sdVals['f-shift']||'');
-  var _fn=(sdVals['f-name']||'');
+  var _fshifts=sdMulti['f-shift']||[];
+  var _fnames=sdMulti['f-name']||[];
+  var _fprods=sdMulti['f-product']||[];
   var _pr=raw.filter(function(r){
     if(_ftl&&rowTL(r)!==_ftl)return false;
-    if(_fs&&rowShift(r)!==_fs)return false;
-    if(_fn&&rowName(r)!==_fn)return false;
+    if(_fshifts.length&&_fshifts.indexOf(rowShift(r))<0)return false;
+    if(_fnames.length&&_fnames.indexOf(rowName(r))<0)return false;
+    if(_fprods.length){var p=productMap[rowEmpID(r)]||'';if(_fprods.indexOf(p)<0)return false;}
     return true;
   });
   var grp=groupBy(_pr,function(r){return monthLabel(rowDate(r));});
@@ -1141,6 +1220,7 @@ Chart.defaults.color=textColor();
 Chart.defaults.borderColor=gridColor();
 // ── SEARCHABLE DROPDOWNS JS ──────────────────────────────────────────────────
 var sdVals={'f-tl':'','f-shift':'','f-name':'','f-ot':''};
+var sdMulti={'f-shift':[],'f-name':[],'f-product':[]};
 
 function sdToggle(id,e){
   e.stopPropagation();
